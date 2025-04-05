@@ -36,11 +36,11 @@ app.post('/process', async (req, res) => {
     const tempImagePath = path.join(staticDir, `temp_${uuidv4()}.png`);
     fs.writeFileSync(tempImagePath, buffer);
 
-    // 2. Call the Python LayoutParser script to detect UI elements
-    exec(`python layout_parser.py "${tempImagePath}"`, async (error, stdout, stderr) => {
+    // 2. Call the Python LayoutParser script using python3
+    exec(`python3 layout_parser.py "${tempImagePath}"`, (error, stdout, stderr) => {
       if (error) {
         console.error(`LayoutParser error: ${error}`);
-        // Remove the temp image file before returning an error
+        console.error(`Stderr: ${stderr}`);
         fs.unlinkSync(tempImagePath);
         return res.status(500).json({ error: 'LayoutParser detection failed' });
       }
@@ -48,8 +48,9 @@ app.post('/process', async (req, res) => {
       let detections;
       try {
         detections = JSON.parse(stdout);
-      } catch (e) {
+      } catch (parseError) {
         fs.unlinkSync(tempImagePath);
+        console.error(`JSON parse error: ${parseError}`);
         return res.status(500).json({ error: 'Failed to parse LayoutParser output' });
       }
 
@@ -90,7 +91,6 @@ app.post('/process', async (req, res) => {
       stream.pipe(out);
       
       out.on('finish', () => {
-        // Remove the temporary image file
         fs.unlinkSync(tempImagePath);
         res.json({ heatmap_url: `/static/${filename}` });
       });

@@ -1,20 +1,20 @@
+// index.js
 const express = require('express');
-const fetch = require('node-fetch'); // Use node-fetch v2.x
+const fetch = require('node-fetch');
 const { createCanvas, loadImage } = require('canvas');
 const fs = require('fs');
 const path = require('path');
+const { exec } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 app.use(express.json());
 
-// Ensure the static directory exists
+// Create a static directory to serve processed images
 const staticDir = path.join(__dirname, 'static');
 if (!fs.existsSync(staticDir)) {
   fs.mkdirSync(staticDir);
 }
-
-// Serve static files from the "static" directory
 app.use('/static', express.static(staticDir));
 
 app.post('/process', async (req, res) => {
@@ -22,8 +22,9 @@ app.post('/process', async (req, res) => {
   if (!screenshot_url) {
     return res.status(400).json({ error: 'screenshot_url is required' });
   }
+
   try {
-    // Download the screenshot image
+    // 1. Download the screenshot image
     const response = await fetch(screenshot_url);
     if (!response.ok) {
       throw new Error('Failed to download image');
@@ -31,50 +32,68 @@ app.post('/process', async (req, res) => {
     const buffer = await response.buffer();
     const image = await loadImage(buffer);
 
-    // Create a canvas with the dimensions of the image
-    const canvas = createCanvas(image.width, image.height);
-    const ctx = canvas.getContext('2d');
+    // Save the downloaded image to a temporary file for the Python script
+    const tempImagePath = path.join(staticDir, `temp_${uuidv4()}.png`);
+    fs.writeFileSync(tempImagePath, buffer);
 
-    // Draw the original image on the canvas
-    ctx.drawImage(image, 0, 0);
+    // 2. Call the Python LayoutParser script to detect UI elements
+    exec(`python layout_parser.py "${tempImagePath}"`, async (error, stdout, stderr) => {
+      if (error) {
+        console.error(`LayoutParser error: ${error}`);
+        // Remove the temp image file before returning an error
+        fs.unlinkSync(tempImagePath);
+        return res.status(500).json({ error: 'LayoutParser detection failed' });
+      }
 
-    // Simulate UI element detection (e.g., button and hero areas)
-    const detections = [
-      {
-        // Example: a button in the lower center
-        x: image.width * 0.4,
-        y: image.height * 0.8,
-        width: image.width * 0.2,
-        height: image.height * 0.1,
-      },
-      {
-        // Example: a hero section at the top
-        x: image.width * 0.1,
-        y: image.height * 0.1,
-        width: image.width * 0.8,
-        height: image.height * 0.3,
-      },
-    ];
+      let detections;
+      try {
+        detections = JSON.parse(stdout);
+      } catch (e) {
+        fs.unlinkSync(tempImagePath);
+        return res.status(500).json({ error: 'Failed to parse LayoutParser output' });
+      }
 
-    // Set up drawing properties for the heatmap overlay
-    ctx.fillStyle = 'rgba(255,0,0,0.4)'; // Red with 40% opacity
-    ctx.shadowColor = 'red';
-    ctx.shadowBlur = 20; // Adjust for more/less blur
+      // 3. Create the main canvas and draw the original screenshot
+      const canvas = createCanvas(image.width, image.height);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(image, 0, 0);
 
-    // Draw a rectangle for each detected UI element
-    detections.forEach((det) => {
-      ctx.fillRect(det.x, det.y, det.width, det.height);
-    });
+      // 4. Create a separate heat canvas for drawing gradients
+      const heatCanvas = createCanvas(image.width, image.height);
+      const heatCtx = heatCanvas.getContext('2d');
 
-    // Save the resulting image to the static directory
-    const filename = `${uuidv4()}.png`;
-    const filepath = path.join(staticDir, filename);
-    const out = fs.createWriteStream(filepath);
-    const stream = canvas.createPNGStream();
-    stream.pipe(out);
-    out.on('finish', () => {
-      // Return the URL of the generated heatmap image
-      res.json({ heatmap_url: `/static/${filename}` });
+      // 5. For each detected UI element, draw a radial gradient
+      detections.forEach(det => {
+        const centerX = det.x + det.width / 2;
+        const centerY = det.y + det.height / 2;
+        const radius = Math.max(det.width, det.height) * 0.75; // Increase radius for a broader effect
+
+        const gradient = heatCtx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+        gradient.addColorStop(0, 'rgba(255, 0, 0, 0.8)');   // Strong red at center
+        gradient.addColorStop(0.5, 'rgba(255, 165, 0, 0.5)'); // Orange in the middle
+        gradient.addColorStop(1, 'rgba(255, 255, 0, 0)');     // Transparent at the edge
+
+        heatCtx.fillStyle = gradient;
+        heatCtx.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2);
+      });
+
+      // 6. Overlay the heat canvas on top of the original image with transparency
+      ctx.globalAlpha = 0.6;
+      ctx.drawImage(heatCanvas, 0, 0);
+      ctx.globalAlpha = 1.0;
+
+      // 7. Save the resulting image to the static directory
+      const filename = `${uuidv4()}.png`;
+      const filepath = path.join(staticDir, filename);
+      const out = fs.createWriteStream(filepath);
+      const stream = canvas.createPNGStream();
+      stream.pipe(out);
+      
+      out.on('finish', () => {
+        // Remove the temporary image file
+        fs.unlinkSync(tempImagePath);
+        res.json({ heatmap_url: `/static/${filename}` });
+      });
     });
   } catch (error) {
     console.error(error);

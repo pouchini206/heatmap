@@ -1,13 +1,11 @@
 {
   "name": "heatmap-api",
   "version": "1.0.0",
-  "description": "API to generate a heatmap overlay on a screenshot",
-  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "canvas": "^2.9.0",
+    "canvas": "^2.9.3",
     "express": "^4.18.2",
     "node-fetch": "^2.6.7",
     "uuid": "^9.0.0"
